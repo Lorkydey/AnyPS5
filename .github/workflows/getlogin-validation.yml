@@ -1,0 +1,42 @@
+name: Validate getlogin_r session independence
+
+on:
+  push:
+    branches: [ci/getlogin-session-regression]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 3
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify regression against the previous implementation
+        shell: bash
+        run: |
+          git show HEAD~2:core/libs/prx/libkernel/System/src/Login.cpp > "$RUNNER_TEMP/Login-before.cpp"
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror -Icore/libs "$RUNNER_TEMP/Login-before.cpp" core/libs/tests/GuestGetloginNoSession.cpp -o "$RUNNER_TEMP/getlogin-before"
+          set +e
+          "$RUNNER_TEMP/getlogin-before" > "$RUNNER_TEMP/getlogin-before.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/getlogin-before.log"
+          test "$result" -eq 1
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror -Icore/libs core/libs/prx/libkernel/System/src/Login.cpp core/libs/tests/GuestGetloginNoSession.cpp -o "$RUNNER_TEMP/getlogin-after"
+          "$RUNNER_TEMP/getlogin-after"
+      - name: Install the project's audio development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Configure the full project
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build the actual libraries and focused tests
+        run: cmake --build build --parallel 3 --target guest_getlogin_tests guest_getlogin_no_session_tests guest_process_arguments_tests guest_parent_process_tests guest_error_tests
+      - name: Run focused runtime tests five times
+        run: ctest --test-dir build --output-on-failure --repeat until-fail:5 -R '^guest_(getlogin(_no_session)?|process_arguments|parent_process|errors)$'
