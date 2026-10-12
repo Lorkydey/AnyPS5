@@ -1,0 +1,85 @@
+name: Validate guest poll priority
+on:
+  push:
+    branches: [ci/poll-priority-windows-validation]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+      SSL_CERT_FILE: C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 32b2eda2ca394a43d46d60f09ea08a469ba7bd4c
+          submodules: recursive
+          fetch-depth: 2
+          persist-credentials: false
+      - id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: C:\winlibs
+          key: ${{ env.WINLIBS_ZIP }}
+      - if: steps.toolchain.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
+          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
+      - shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\winlibs\mingw64\bin'
+      - name: Configure the native Windows build
+        shell: cmd
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build socket libraries and behavior tests
+        shell: cmd
+        run: cmake --build build --target guest_poll_tests guest_socket_pair_tests guest_udp_tests guest_sce_net_tests --parallel 4
+      - name: Prove the Windows regression against the PR parent
+        shell: python
+        run: |
+          import pathlib, subprocess
+          source = pathlib.Path('core/libs/prx/libkernel/Socket/src/Udp.cpp')
+          saved = source.read_bytes()
+          try:
+              source.write_bytes(subprocess.check_output(['git', 'show', 'HEAD^:' + source.as_posix()]))
+              subprocess.run(['cmake', '--build', 'build', '--target', 'guest_poll_tests', '--parallel', '4'], check=True)
+              result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_poll$', '--output-on-failure', '--no-tests=error'], capture_output=True, text=True)
+              print(result.stdout, flush=True)
+              print(result.stderr, flush=True)
+              assert result.returncode != 0, 'The unpatched Windows library must fail the new test'
+              assert 'POLLPRI is not supported by WSAPoll' in result.stdout, 'The failure must be the specific removed refusal'
+          finally:
+              source.write_bytes(saved)
+          subprocess.run(['cmake', '--build', 'build', '--target', 'guest_poll_tests', '--parallel', '4'], check=True)
+      - name: Verify Windows request and returned flags
+        shell: cmd
+        run: ctest --test-dir build -R "^(guest_poll|guest_socket_pair|guest_udp|guest_sce_net)$" --output-on-failure --no-tests=error --repeat until-fail:3
+      - name: Conventions and whitespace
+        shell: cmd
+        run: python tools/check_conventions.py --base HEAD^ && git diff --check HEAD^ HEAD
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 32b2eda2ca394a43d46d60f09ea08a469ba7bd4c
+          submodules: recursive
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Configure and build socket tests
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+          cmake --build build --target guest_poll_tests guest_socket_pair_tests guest_udp_tests guest_sce_net_tests --parallel 4
+      - name: Linux non-regression checks
+        run: ctest --test-dir build -R '^(guest_poll|guest_socket_pair|guest_udp|guest_sce_net)$' --output-on-failure --no-tests=error --repeat until-fail:3
+      - name: Conventions and test registration
+        run: |
+          python tools/check_conventions.py --base HEAD^
+          python tools/check_test_registration.py build
+          git diff --check HEAD^ HEAD
