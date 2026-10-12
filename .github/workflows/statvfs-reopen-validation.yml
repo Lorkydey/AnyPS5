@@ -53,10 +53,10 @@ jobs:
           path = pathlib.Path('core/libs/prx/libSceLibcInternal/PathStatistics.cpp')
           original = path.read_bytes()
           try:
-              source = original.decode('utf-8')
+              source = path.read_text(encoding='utf-8')
               source = source.replace('#include "prx/libc/include/FilesystemError.hpp"', '#include "prx/libc/include/General.hpp"')
               source = source.replace('    std::filesystem::path native;\n    if (const int error = ResolvePathError_nid_no_patch(path, native)) return Fail(error);\n    const int descriptor = OpenMetadata(native, directory);', '    const int descriptor = OpenMetadata(ResolvePath_nid_no_patch(path), directory);')
-              assert source != original.decode('utf-8')
+              assert 'ResolvePathError_nid_no_patch' not in source
               path.write_bytes(source.encode('utf-8'))
               subprocess.run(['cmake', '--build', 'build', '--target', 'guest_statvfs_tests', '--parallel', '4'], check=True)
               result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_statvfs$', '--output-on-failure', '--no-tests=error'], capture_output=True, text=True)
