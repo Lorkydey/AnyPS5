@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 68a735ff971c8f5d1c58d632552485656e0d2a22
+          ref: 3299da5d5f9ed9b35e448fbab3d1562b4f2bf1dd
           submodules: recursive
-          fetch-depth: 2
+          fetch-depth: 3
           persist-credentials: false
       - name: Install runtime dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
@@ -28,6 +28,6 @@ jobs:
         run: ctest --test-dir build -R '^agc_driver_(graphics|inactive_vertex_point_size)$' --output-on-failure --no-tests=error
       - name: Conventions and patch whitespace
         run: |
-          python tools/check_conventions.py --base HEAD^
+          python tools/check_conventions.py --base d53960612fcfeb0b4c5e2738fafbecaf6ac983cb
           python tools/check_test_registration.py build
-          git diff --check HEAD^ HEAD
+          git diff --check d53960612fcfeb0b4c5e2738fafbecaf6ac983cb HEAD
