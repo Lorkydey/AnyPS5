@@ -1,0 +1,67 @@
+name: Validate inactive vertex point size
+on:
+  push:
+    branches: [ci/inactive-vertex-point-size]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANYPS5_REQUIRE_VULKAN: '1'
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 93f1a1a95d5fab4855b3e61f9c920422e07be7a6
+          submodules: recursive
+          fetch-depth: 4
+          persist-credentials: false
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime and focused tests
+        run: cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_inactive_vertex_point_size_tests --parallel 4
+      - name: Run state and pixel regression tests on lavapipe
+        run: ctest --test-dir build -R '^agc_driver_(graphics|inactive_vertex_point_size)$' --output-on-failure --no-tests=error
+      - name: Conventions and patch whitespace
+        run: |
+          python tools/check_conventions.py --base 3e0e01f35f63d18b5def74f6d1ce3966b0973732
+          python tools/check_test_registration.py build
+          git diff --check 3e0e01f35f63d18b5def74f6d1ce3966b0973732 HEAD
+      - name: Apply pinned line-strip decoding PR 4584
+        run: |
+          git fetch --depth=2 https://github.com/boykopovar/AnyPS5.git 1858502b4054a22a319662577026a4d9210c7a13
+          git diff 1858502b4054a22a319662577026a4d9210c7a13^ 1858502b4054a22a319662577026a4d9210c7a13 -- core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp core/libs/prx/libSceAgcDriver/tests/Graphics.cpp | git apply
+      - name: Add combined decoding assertions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+          
+          path = Path('.') / 'core/libs/prx/libSceAgcDriver/tests/Graphics.cpp'
+          source = path.read_text(encoding='utf-8')
+          checks = [
+              (
+                  '        Require(rejection.empty(), "inactive line-strip point size failed the draw precheck: " + rejection);',
+                  '\n        const auto state = AgcDriver::Graphics::DecodeState(queue);'
+                  '\n        Require(state.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP && !state.primitiveRestart, "inactive point size changed line-strip decoding");',
+              ),
+              (
+                  '        Require(indexedRejection.empty(), "inactive line-strip point size with primitive restart failed the draw precheck: " + indexedRejection);',
+                  '\n        const auto indexedState = AgcDriver::Graphics::DecodeState(queue);'
+                  '\n        Require(indexedState.topology == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP && indexedState.primitiveRestart, "inactive point size changed indexed line-strip decoding");',
+              ),
+          ]
+          for anchor, addition in checks:
+              if source.count(anchor) != 1 or addition in source:
+                  raise RuntimeError('Unexpected line-strip test layout')
+              source = source.replace(anchor, anchor + addition)
+          path.write_text(source, encoding='utf-8', newline='\n')
+          PY
+      - name: Build and test the combined line-strip change
+        run: |
+          cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_inactive_vertex_point_size_tests --parallel 4
+          ctest --test-dir build -R '^agc_driver_(graphics|inactive_vertex_point_size)$' --output-on-failure --no-tests=error
