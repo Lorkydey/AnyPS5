@@ -114,6 +114,17 @@ void inactiveVertexPointSizeTests() {
             static_cast<void>(AgcDriver::Graphics::DecodeState(queue));
         }
     }
+    for (const auto raster : {0u, 0x240u, 0x248u}) {
+        auto queue = pointSizeState();
+        queue.userConfig[0x242] = 3;
+        queue.context[0x205] = raster;
+        const auto rejection = AgcDriver::Graphics::DrawRejection(queue, false);
+        Require(rejection.empty(), "inactive line-strip point size failed the draw precheck: " + rejection);
+        queue.userConfig[0x24b] = 1;
+        queue.context[0x103] = 0xffffffffu;
+        const auto indexedRejection = AgcDriver::Graphics::DrawRejection(queue, true);
+        Require(indexedRejection.empty(), "inactive line-strip point size with primitive restart failed the draw precheck: " + indexedRejection);
+    }
     const auto rejected = [](AgcDriver::QueueState queue) {
         Require(AgcDriver::Graphics::DrawRejection(queue, false).find("auxiliary vertex exports") != std::string::npos, "unsupported vertex exports passed the draw precheck");
         try {

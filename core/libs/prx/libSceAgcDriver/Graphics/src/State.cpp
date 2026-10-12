@@ -110,6 +110,7 @@ std::uint32_t inactiveVertexPointSize(const QueueState& queue) {
     if ((raster->second & 8u) != 0 && (raster->second & 0x7e0u) != 0x240u) return 0;
     switch (primitive->second) {
         case 2:
+        case 3:
         case 4:
         case 5:
         case 6:
