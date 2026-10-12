@@ -45,7 +45,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
       - name: Build every NGS2 behavior test
         shell: bash
-        run: cmake --build build --target ngs2_geom_tests ngs2_render_tests ngs2_atrac9_tests ngs2_filter_tests ngs2_custom_tests ngs2_parse_tests ngs2_stream_tests ngs2_userfx_tests ngs2_report_tests --parallel 4
+        run: cmake --build build --target ngs2_core_render_tests ngs2_geom_tests ngs2_render_tests ngs2_atrac9_tests ngs2_filter_tests ngs2_custom_tests ngs2_parse_tests ngs2_stream_tests ngs2_userfx_tests ngs2_report_tests --parallel 4
       - name: Prove the regression on unmodified main geometry
         shell: python
         run: |
