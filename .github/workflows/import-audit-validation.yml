@@ -1,0 +1,61 @@
+name: Validate import-audit report writes
+
+on:
+  push:
+    branches: [ci/import-audit-4425-validation]
+    paths:
+      - .github/workflows/import-audit-validation.yml
+      - tools/**
+
+permissions:
+  contents: read
+
+jobs:
+  reports:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Verify regressions against the previous implementation
+        shell: python
+        run: |
+          import importlib.util
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import sys
+          import unittest
+          sys.path.insert(0, str(Path.cwd()))
+          from tools.tests import test_import_audit
+
+          before = Path(os.environ['RUNNER_TEMP']) / 'import-audit-before' / 'tools'
+          before.mkdir(parents=True)
+          source = subprocess.run(['git', 'show', 'HEAD~2:tools/import_audit.py'], capture_output=True, text=True, check=True).stdout
+          (before / 'import_audit.py').write_text(source, encoding='utf-8')
+          for name in ('nid_names.py', 'progress.py'):
+              shutil.copyfile(Path('tools') / name, before / name)
+          spec = importlib.util.spec_from_file_location('import_audit_before', before / 'import_audit.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          test_import_audit.import_audit = module
+          names = ['test_json_directory_error_preserves_the_supplied_path']
+          if os.name == 'posix':
+              names.append('test_new_json_report_permissions_follow_the_process_umask')
+          result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(test_import_audit.ImportAuditTests(name) for name in names))
+          expected = 3 if os.name == 'posix' else 1
+          if result.errors or len(result.failures) != expected:
+              raise SystemExit('Unexpected result against the previous implementation')
+          print(f'Confirmed {expected} regression failures against the previous implementation.')
+      - name: Validate the updated PR tests
+        run: python -m unittest tools.tests.test_import_audit tools.tests.test_nid_names tools.tests.test_progress -v
