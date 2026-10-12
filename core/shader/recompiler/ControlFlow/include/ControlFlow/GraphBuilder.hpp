@@ -32,6 +32,14 @@ struct UserDataCall {
     std::uint32_t userDataRegister = 0;
 };
 
+struct UserDataTail {
+    std::uint32_t programCounter;
+    std::uint32_t userDataRegister;
+};
+
+[[nodiscard]] std::optional<UserDataTail> FindUserDataTail(const RdnaProgram& program, std::uint32_t userDataBase, std::uint32_t userDataCount);
+[[nodiscard]] std::vector<std::uint32_t> LinkUserDataTail(const RdnaProgram& program, const UserDataTail& tail, const RdnaProgram& continuation);
+
 [[nodiscard]] std::optional<std::uint32_t> UnresolvableSwappcTarget(const RdnaProgram& program, const SwappcInfo* swappc);
 [[nodiscard]] std::vector<UserDataCall> FindUserDataCalls(const RdnaProgram& program, const SwappcInfo& swappc);
 [[nodiscard]] std::optional<std::uint32_t> UserDataCalleeLength(std::span<const std::uint32_t> callee, std::uint32_t linkRegister);

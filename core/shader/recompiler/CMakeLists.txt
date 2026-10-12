@@ -249,8 +249,10 @@ function(add_shader_recompiler target runtimeTarget)
             UnresolvableSwappcTarget
             ValidateAndOptimizeSpirv
             FindUserDataCalls
+            FindUserDataTail
             UserDataCalleeLength
             LinkUserDataCalls
+            LinkUserDataTail
             WriteFileAtomically
     )
     set(shaderCacheManifest)
