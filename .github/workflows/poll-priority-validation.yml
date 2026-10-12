@@ -1,0 +1,22 @@
+name: Validate guest poll priority
+on:
+  push:
+    branches: [ci/poll-priority-windows-validation]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build libx11-dev libxext-dev libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+      - name: Build native socket libraries and tests
+        run: cmake --build build --target guest_poll_tests guest_socket_pair_tests guest_udp_tests guest_sce_net_tests --parallel 4
+      - name: Check socket and urgent-data behavior
+        run: ctest --test-dir build -R '^(guest_poll|guest_socket_pair|guest_udp|guest_sce_net)$' --output-on-failure --no-tests=error --repeat until-fail:3
