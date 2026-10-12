@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 3299da5d5f9ed9b35e448fbab3d1562b4f2bf1dd
+          ref: 6d5ee52b7e9cac31cdbb5e0196034ad5f6815ba3
           submodules: recursive
           fetch-depth: 3
           persist-credentials: false
@@ -28,6 +28,6 @@ jobs:
         run: ctest --test-dir build -R '^agc_driver_(graphics|inactive_vertex_point_size)$' --output-on-failure --no-tests=error
       - name: Conventions and patch whitespace
         run: |
-          python tools/check_conventions.py --base d53960612fcfeb0b4c5e2738fafbecaf6ac983cb
+          python tools/check_conventions.py --base 2f4cc8983be9b9eacb878a4c705bdf5fcdc2d84f
           python tools/check_test_registration.py build
-          git diff --check d53960612fcfeb0b4c5e2738fafbecaf6ac983cb HEAD
+          git diff --check 2f4cc8983be9b9eacb878a4c705bdf5fcdc2d84f HEAD
