@@ -455,6 +455,15 @@ ShaderRecompiler::RectListShaders DrawRectangle(const ShaderSnapshot& front, con
 
 namespace {
 
+std::vector<std::uint32_t> LinkVertexUserDataTail(const ShaderRecompiler::RecompileRequest& request, const ShaderSnapshot& snapshot) {
+    if (request.shader.stage != ShaderRecompiler::ShaderStage::Vertex || !request.shader.header.empty() || !snapshot.userDataTailRegister) return {};
+    const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(request.shader.code);
+    const auto tail = ShaderRecompiler::FindUserDataTail(program, request.context.userDataBaseRegister, static_cast<std::uint32_t>(request.context.userData.size()));
+    if (!tail) return {};
+    const auto continuation = ReadUserDataTailContinuation(request.shader.code, request.context.userDataBaseRegister, request.context.userData);
+    return ShaderRecompiler::LinkUserDataTail(program, *tail, ShaderRecompiler::RdnaInstructionDecoder{}.Decode(continuation->code));
+}
+
 std::string hexText(std::uint64_t value) {
     char text[24];
     std::snprintf(text, sizeof(text), "0x%llx", static_cast<unsigned long long>(value));
@@ -481,14 +490,7 @@ std::vector<std::uint32_t> ReadUserDataCallee(std::uint64_t address, std::uint32
     throw std::runtime_error("its callee at " + hexText(address) + " does not return within " + std::to_string(limitWords * 4u) + " bytes");
 }
 
-std::vector<std::uint32_t> LinkUserDataCallees(const ShaderRecompiler::RecompileRequest& request, const ShaderSnapshot& snapshot) {
-    if (request.shader.stage == ShaderRecompiler::ShaderStage::Vertex && request.shader.header.empty() && snapshot.userDataTailRegister) {
-        const auto program = ShaderRecompiler::RdnaInstructionDecoder{}.Decode(request.shader.code);
-        const auto tail = ShaderRecompiler::FindUserDataTail(program, request.context.userDataBaseRegister, static_cast<std::uint32_t>(request.context.userData.size()));
-        if (!tail) return {};
-        const auto continuation = ReadUserDataTailContinuation(request.shader.code, request.context.userDataBaseRegister, request.context.userData);
-        return ShaderRecompiler::LinkUserDataTail(program, *tail, ShaderRecompiler::RdnaInstructionDecoder{}.Decode(continuation->code));
-    }
+std::vector<std::uint32_t> LinkUserDataCallees(const ShaderRecompiler::RecompileRequest& request) {
     if (request.shader.stage != ShaderRecompiler::ShaderStage::Compute) return {};
     const auto code = request.shader.code;
     if (std::none_of(code.begin(), code.end(), [](std::uint32_t word) { return (word & 0xff80ff00u) == 0xbe802100u; })) return {};
@@ -516,7 +518,8 @@ ShaderRecompiler::PreparedShaderInvocation InvocationFor(const ShaderSnapshot& s
     require(codeOffset < snapshot.code.size(), "prepared shader code offset is outside the snapshot");
     const auto code = std::span(snapshot.code).subspan(codeOffset);
     require(request.shader.code.data() == code.data() && request.shader.code.size() == code.size(), "prepared invocation does not refer to registered code");
-    const auto linked = LinkUserDataCallees(request, snapshot);
+    auto linked = LinkUserDataCallees(request);
+    if (linked.empty()) linked = LinkVertexUserDataTail(request, snapshot);
     auto source = request;
     if (!linked.empty()) source.shader.code = linked;
     auto invocationRequest = source;

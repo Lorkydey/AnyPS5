@@ -245,14 +245,14 @@ function(add_shader_recompiler target runtimeTarget)
             ShaderCacheDirectory
             SrgbDecodeBit
             SrgbUnormFormat
+            FindUserDataTail
+            LinkUserDataTail
             ThreadOwned
             UnresolvableSwappcTarget
             ValidateAndOptimizeSpirv
             FindUserDataCalls
-            FindUserDataTail
             UserDataCalleeLength
             LinkUserDataCalls
-            LinkUserDataTail
             WriteFileAtomically
     )
     set(shaderCacheManifest)
