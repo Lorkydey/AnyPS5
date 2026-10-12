@@ -194,6 +194,15 @@ static CpuClockRegistry& CpuClocks() {
     return *registry;
 }
 
+bool IsLiveGuestThread(const PthreadPrivate* thread) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, live] : registry.threads) {
+        if (live == thread) return !live->_finished.load(std::memory_order_acquire);
+    }
+    return false;
+}
+
 PthreadPrivate::PthreadPrivate(const PthreadAttrPrivate* attr) : _finished(false), _retval(nullptr), _detached(false), _adopted(false) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);
@@ -248,15 +257,6 @@ KernelCpumask LiveGuestThreadsAffinity() {
         if (!thread->_finished.load(std::memory_order_acquire)) mask |= thread->affinity.load(std::memory_order_relaxed);
     }
     return mask;
-}
-
-bool IsLiveGuestThread(const PthreadPrivate* thread) {
-    auto& registry = CpuClocks();
-    std::lock_guard lock(registry.lock);
-    for (const auto& [id, live] : registry.threads) {
-        if (live == thread) return !live->_finished.load(std::memory_order_acquire);
-    }
-    return false;
 }
 
 bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos) {
