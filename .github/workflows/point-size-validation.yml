@@ -1,0 +1,33 @@
+name: Validate inactive vertex point size
+on:
+  push:
+    branches: [ci/inactive-vertex-point-size]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ANYPS5_REQUIRE_VULKAN: '1'
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 68a735ff971c8f5d1c58d632552485656e0d2a22
+          submodules: recursive
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime and focused tests
+        run: cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_inactive_vertex_point_size_tests --parallel 4
+      - name: Run state and pixel regression tests on lavapipe
+        run: ctest --test-dir build -R '^agc_driver_(graphics|inactive_vertex_point_size)$' --output-on-failure --no-tests=error
+      - name: Conventions and patch whitespace
+        run: |
+          python tools/check_conventions.py --base HEAD^
+          python tools/check_test_registration.py build
+          git diff --check HEAD^ HEAD
