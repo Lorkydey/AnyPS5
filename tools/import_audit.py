@@ -289,20 +289,20 @@ def attach_names(records, names):
 
 
 def write_json(path, result):
-    path = path.resolve()
     if path.is_dir():
         raise AuditError(f"{path}: JSON output is a directory")
-    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
-        temporary = Path(handle.name)
-    try:
-        temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-        if path.exists():
-            temporary.chmod(path.stat().st_mode & 0o7777)
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.chmod(0o600)
-        temporary.unlink(missing_ok=True)
+    destination = path.resolve()
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=destination.name + ".", suffix=".tmp") as directory:
+        temporary = Path(directory) / destination.name
+        try:
+            temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            if destination.exists():
+                temporary.chmod(destination.stat().st_mode & 0o7777)
+            temporary.replace(destination)
+        finally:
+            if temporary.exists():
+                temporary.chmod(0o600)
+            temporary.unlink(missing_ok=True)
 
 
 def git_stamp(source=ROOT):
