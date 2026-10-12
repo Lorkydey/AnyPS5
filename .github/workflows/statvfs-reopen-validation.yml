@@ -1,0 +1,77 @@
+name: Validate statvfs rebase
+on:
+  push:
+    branches: [ci/statvfs-reopen-validation]
+permissions:
+  contents: read
+jobs:
+  statvfs:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: c052b7c720501f0b49527194baf625d8a4a50152
+          submodules: recursive
+          fetch-depth: 2
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - if: runner.os == 'Windows'
+        id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: C:\winlibs
+          key: ${{ env.WINLIBS_ZIP }}
+      - if: runner.os == 'Windows' && steps.toolchain.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
+          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\winlibs\mingw64\bin'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value 'SSL_CERT_FILE=C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
+      - name: Configure native libraries
+        shell: bash
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build filesystem statistics behavior tests
+        shell: bash
+        run: cmake --build build --target guest_statvfs_tests guest_fstatvfs_tests guest_fstatvfs_conversion_tests guest_fstatfs_tests guest_utime_tests guest_utime_forwarding_tests --parallel 4
+      - name: Prove the path error regression before the integration fix
+        shell: python
+        run: |
+          import pathlib, subprocess
+          path = pathlib.Path('core/libs/prx/libSceLibcInternal/PathStatistics.cpp')
+          original = path.read_bytes()
+          try:
+              source = original.decode('utf-8')
+              source = source.replace('#include "prx/libc/include/FilesystemError.hpp"', '#include "prx/libc/include/General.hpp"')
+              source = source.replace('    std::filesystem::path native;\n    if (const int error = ResolvePathError_nid_no_patch(path, native)) return Fail(error);\n    const int descriptor = OpenMetadata(native, directory);', '    const int descriptor = OpenMetadata(ResolvePath_nid_no_patch(path), directory);')
+              assert source != original.decode('utf-8')
+              path.write_bytes(source.encode('utf-8'))
+              subprocess.run(['cmake', '--build', 'build', '--target', 'guest_statvfs_tests', '--parallel', '4'], check=True)
+              result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_statvfs$', '--output-on-failure', '--no-tests=error'], capture_output=True, text=True)
+              print(result.stdout, flush=True)
+              print(result.stderr, flush=True)
+              assert result.returncode != 0, 'The old implementation must fail the new test'
+              assert 'Guest path component is not a directory' in result.stdout
+          finally:
+              path.write_bytes(original)
+          subprocess.run(['cmake', '--build', 'build', '--target', 'guest_statvfs_tests', '--parallel', '4'], check=True)
+      - name: Check filesystem statistics behavior after restoring the PR
+        shell: bash
+        run: ctest --test-dir build -R '^guest_(statvfs|fstatvfs|fstatvfs_conversion|fstatfs|utime|utime_forwarding)$' --output-on-failure --no-tests=error --repeat until-fail:3
+      - name: Conventions and patch whitespace
+        shell: bash
+        run: |
+          python tools/check_conventions.py --base HEAD^
+          git diff --check HEAD^ HEAD
