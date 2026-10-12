@@ -194,7 +194,7 @@ static CpuClockRegistry& CpuClocks() {
     return *registry;
 }
 
-bool IsLiveGuestThread(const PthreadPrivate* thread) {
+extern "C" bool IsLiveGuestThread_nid_no_patch(const PthreadPrivate* thread) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);
     for (const auto& [id, live] : registry.threads) {
