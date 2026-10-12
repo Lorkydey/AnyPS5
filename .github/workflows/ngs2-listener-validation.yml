@@ -1,0 +1,82 @@
+name: Validate default NGS2 listener
+on:
+  push:
+    branches: [ci/ngs2-listener-validation]
+permissions:
+  contents: read
+jobs:
+  ngs2:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: dadc23a8c19b0d42b15e6f593257d8a0c2da612e
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - if: runner.os == 'Windows'
+        id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: C:\winlibs
+          key: ${{ env.WINLIBS_ZIP }}
+      - if: runner.os == 'Windows' && steps.toolchain.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
+          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\winlibs\mingw64\bin'
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value 'SSL_CERT_FILE=C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt'
+      - name: Configure native libraries
+        shell: bash
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build every NGS2 behavior test
+        shell: bash
+        run: cmake --build build --target ngs2_core_render_tests ngs2_geom_tests ngs2_render_tests ngs2_atrac9_tests ngs2_filter_tests ngs2_custom_tests ngs2_parse_tests ngs2_stream_tests ngs2_userfx_tests ngs2_report_tests --parallel 4
+      - name: Prove main fails and the previous transform violates the new rejection tests
+        shell: python
+        run: |
+          import pathlib, subprocess
+          directory = pathlib.Path('core/libs/prx/libSceNgs2.native/src')
+          paths = [directory / p for p in ['Geom.cpp', 'Voice.cpp', 'Unimplemented.cpp']]
+          original = {p: p.read_bytes() for p in paths}
+          cases = [
+              ('7940cacd834f06012e2678189316cc9dee85b6fd', paths, 'sceNgs2GeomCalcListener'),
+              ('dd087ce3654b63609d98437e0768ec6f2d13c203', [directory / 'Geom.cpp'], 'NGS2 check failed at line'),
+          ]
+          for revision, replacements, expected in cases:
+              print('Negative control:', revision, flush=True)
+              try:
+                  for p in replacements:
+                      p.write_bytes(subprocess.check_output(['git', 'show', revision + ':' + p.as_posix()]))
+                  subprocess.run(['cmake', '--build', 'build', '--target', 'ngs2_geom_tests', '--parallel', '4'], check=True)
+                  result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^ngs2_geom$', '--output-on-failure', '--no-tests=error'], capture_output=True, text=True)
+                  print(result.stdout, flush=True)
+                  print(result.stderr, flush=True)
+                  assert result.returncode != 0, 'The regression test must fail against ' + revision
+                  assert expected in result.stdout, 'Unexpected failure in the negative control'
+              finally:
+                  for p, content in original.items():
+                      p.write_bytes(content)
+          subprocess.run(['cmake', '--build', 'build', '--target', 'ngs2_geom_tests', '--parallel', '4'], check=True)
+      - name: Check all NGS2 behavior after restoring the PR
+        shell: bash
+        run: ctest --test-dir build -R '^ngs2_' --output-on-failure --no-tests=error --repeat until-fail:3
+      - name: Conventions and patch whitespace
+        shell: bash
+        run: |
+          python tools/check_conventions.py --base 7940cacd834f06012e2678189316cc9dee85b6fd
+          git diff --check 7940cacd834f06012e2678189316cc9dee85b6fd HEAD
