@@ -100,6 +100,27 @@ VkConservativeRasterizationModeEXT decodeConservativeRasterization(const QueueSt
 // Render target index, viewport index and the misc export vector that carries them are accepted but
 // not routed: color targets are single-layer, so layered draws land in layer 0.
 constexpr std::uint32_t LayerExports = (1u << 18u) | (1u << 19u) | (1u << 21u) | (1u << 24u);
+
+std::uint32_t inactiveVertexPointSize(const QueueState& queue) {
+    const auto stages = find(queue.context, 0x2d5);
+    const auto primitive = find(queue.userConfig, 0x242, RegisterBank::UserConfig);
+    const auto raster = find(queue.context, 0x205);
+    if (stages == queue.context.end() || primitive == queue.userConfig.end() || raster == queue.context.end()) return 0;
+    if ((stages->second & 0x24u) != 0) return 0;
+    if ((raster->second & 8u) != 0 && (raster->second & 0x7e0u) != 0x240u) return 0;
+    switch (primitive->second) {
+        case 2:
+        case 4:
+        case 5:
+        case 6:
+        case 7:
+        case 17:
+            return 1u << 16u;
+        default:
+            return 0;
+    }
+}
+
 constexpr std::uint32_t DepthControlMask = ~0x007007f0u;
 // EXEC_ON_HIER_FAIL / EXEC_ON_NOOP / EXEC_IF_OVERLAPPED (bits 9, 10, 17) only force the pixel shader
 // to run, which it always does here.
@@ -698,7 +719,7 @@ State DecodeState(const QueueState& queue, bool vertexWorkgroup) {
             std::fprintf(stderr, "[gpu] layer/viewport index vertex exports are ignored (PA_CL_VS_OUT_CNTL=0x%08x)\n", read(cx, 0x207));
         }
     }
-    zero(cx, 0x207, ~LayerExports, "clip distances, layer, viewport or auxiliary vertex exports");
+    zero(cx, 0x207, ~(LayerExports | inactiveVertexPointSize(queue)), "clip distances, layer, viewport or auxiliary vertex exports");
     result.samples = decodeSamples(cx);
     decodeSampleLocations(cx, result);
     {
@@ -1164,7 +1185,7 @@ std::string DrawRejection(const QueueState& queue, bool indexed) {
         if (value(queue.userConfig, 0x242, primitive) && (primitive & 0x3fu) != 1 && (primitive & 0x3fu) != 2 && (primitive & 0x3fu) != 3 && (primitive & 0x3fu) != 4 && (primitive & 0x3fu) != 5 && (primitive & 0x3fu) != 6) return "AGC graphics: primitive restart is only supported for point, line and triangle topologies";
         if (value(cx, 0x103, resetIndex) && (resetIndex & 0xffffu) != 0xffffu) return "AGC graphics: primitive restart index other than all ones is unsupported";
     }
-    if (auto reason = nonzero(cx, 0x207, ~LayerExports, "clip distances, layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
+    if (auto reason = nonzero(cx, 0x207, ~(LayerExports | inactiveVertexPointSize(queue)), "clip distances, layer, viewport or auxiliary vertex exports"); !reason.empty()) return reason;
     if (value(cx, 0x200, word)) {
         const auto renderControl = find(cx, 0x000);
         const bool depthClear = renderControl != cx.end() && (renderControl->second & 1u) != 0;
