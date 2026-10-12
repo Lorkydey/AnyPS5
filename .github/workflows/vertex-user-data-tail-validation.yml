@@ -1,0 +1,54 @@
+name: Validate vertex user-data tails
+on:
+  push:
+    branches: [ci/vertex-user-data-tail]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      ANYPS5_REQUIRE_VULKAN: '1'
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 57c761a2204823ac094dfa212cc3630b409a006e
+          submodules: recursive
+          fetch-depth: 4
+          persist-credentials: false
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime and regression tests
+        run: cmake --build build --target libs relinker agc_driver_vertex_user_data_tail_tests agc_shader_control_flow_tests agc_driver_tests agc_driver_compute_user_data_calls_tests agc_driver_scalar_setpc_tests --parallel 4
+      - name: Run graphics, cache and control-flow tests
+        run: ctest --test-dir build -R '^(agc_driver_vertex_user_data_tail|agc_shader_control_flow|agc_driver|agc_driver_compute_user_data_calls.*|agc_driver_scalar_setpc)$' --output-on-failure --no-tests=error
+      - name: Conventions, test registration and patch whitespace
+        run: |
+          python tools/check_conventions.py --base 43e3a70f8143f014f621c48abbdb137fffd7346e
+          python tools/check_test_registration.py build
+          git diff --check 43e3a70f8143f014f621c48abbdb137fffd7346e HEAD
+      - name: Replace changed existing sources with main for the negative control
+        run: |
+          python - <<'PY'
+          import subprocess
+          paths = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=M', '43e3a70f8143f014f621c48abbdb137fffd7346e', 'HEAD', '--', 'core'], text=True).splitlines()
+          subprocess.run(['git', 'restore', '--source', '43e3a70f8143f014f621c48abbdb137fffd7346e', '--', *paths], check=True)
+          PY
+          cmake --build build --target libs agc_driver_vertex_user_data_tail_tests --parallel 4
+      - name: Require the new pixel test to fail at main's unresolved tail jump
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^agc_driver_vertex_user_data_tail$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and 'unsupported dynamic s_setpc_b64' in result.stdout, 'main did not fail at the expected unresolved tail'
+          PY
+      - name: Restore the exact source revision and retest
+        run: |
+          git restore --source HEAD --worktree .
+          cmake --build build --target libs agc_driver_vertex_user_data_tail_tests agc_shader_control_flow_tests agc_driver_tests agc_driver_compute_user_data_calls_tests agc_driver_scalar_setpc_tests --parallel 4
+          ctest --test-dir build -R '^(agc_driver_vertex_user_data_tail|agc_shader_control_flow|agc_driver|agc_driver_compute_user_data_calls.*|agc_driver_scalar_setpc)$' --output-on-failure --no-tests=error
