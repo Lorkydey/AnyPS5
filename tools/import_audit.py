@@ -5,6 +5,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -287,6 +288,23 @@ def attach_names(records, names):
             record["name_verified"] = nid_names.compute_nid(name) == record["nid"]
 
 
+def write_json(path, result):
+    path = path.resolve()
+    if path.is_dir():
+        raise AuditError(f"{path}: JSON output is a directory")
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        temporary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        if path.exists():
+            temporary.chmod(path.stat().st_mode & 0o7777)
+        temporary.replace(path)
+    finally:
+        if temporary.exists():
+            temporary.chmod(0o600)
+        temporary.unlink(missing_ok=True)
+
+
 def git_stamp(source=ROOT):
     try:
         commit = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -369,7 +387,7 @@ def main(argv=None):
         if args.json:
             commit, dirty = git_stamp(Path(args.source))
             result = {"source_commit": commit, "source_dirty": dirty, "registries": [str(path) for path in args.registries], **summary, "imports": records}
-            args.json.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+            write_json(args.json, result)
     except AuditError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 2
