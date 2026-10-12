@@ -22,7 +22,7 @@ jobs:
       - name: Verify the regression against main
         shell: bash
         run: |
-          git show 33ae282e4e1f6ce23e3c5f4d471d16733d7a38b8:core/libs/prx/libkernel/Pthread/Posix/Thread.cpp > core/libs/prx/libkernel/Pthread/Posix/Thread.cpp
+          git show c6efe068a17ff9fcc076e114348607e567d569e4:core/libs/prx/libkernel/Pthread/Posix/Thread.cpp > core/libs/prx/libkernel/Pthread/Posix/Thread.cpp
           if cmake --build build --target guest_available_cpumask_tests --parallel 4 > baseline.log 2>&1; then
             cat baseline.log
             echo 'Expected the behavior test to fail linking against main without pthread_setaffinity_np'
