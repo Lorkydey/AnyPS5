@@ -5015,7 +5015,6 @@ int main(int argc, char** argv) {
         }
         RunGuestLeaseWaitTests();
         stateTests();
-        inactiveVertexPointSizeTests();
         hdrComponentSwapTests();
         depthMaintenanceTests();
         hardwareScreenOffsetTests();
@@ -5048,6 +5047,7 @@ int main(int argc, char** argv) {
         MsaaEnableSingleSampleTests();
         ShaderStageTests();
         NggVertexWorkgroupTests();
+        inactiveVertexPointSizeTests();
         TuningFieldTests();
         PixelInputLayoutTests();
         UnexportedPixelInputTests();
