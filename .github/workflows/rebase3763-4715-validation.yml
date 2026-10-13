@@ -1,0 +1,50 @@
+name: Validate inactive point size after clip cull and line strip
+on:
+  push:
+    branches: [ci/rebase3763-4715-oct13]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      ANYPS5_REQUIRE_VULKAN: '1'
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: d4b59ce9fa89b54ab5a0e9ed34f902892d2e4f02
+          submodules: recursive
+          fetch-depth: 4
+          persist-credentials: false
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime and regression tests
+        run: cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_vertex_clip_cull_draw_tests agc_driver_vertex_clip_cull_distances_tests agc_driver_layered_volume_draw_tests agc_driver_layered_volume_submit_tests agc_vertex_layer_export_tests agc_shader_memory_tests agc_driver_inactive_vertex_point_size_tests --parallel 4
+      - name: Run state, point-size and clip/cull pixel tests
+        run: ctest --test-dir build -R '^(agc_driver_graphics|agc_driver_vertex_clip_cull_.*|agc_driver_layered_volume_.*|agc_vertex_layer_export|agc_shader_memory|agc_driver_inactive_vertex_point_size)$' --output-on-failure --no-tests=error
+      - name: Conventions, test registration and patch whitespace
+        run: |
+          python tools/check_conventions.py --base 075169f7b3faeae1216efc35df41c44fac9f3190
+          python tools/check_test_registration.py build
+          git diff --check 075169f7b3faeae1216efc35df41c44fac9f3190 HEAD
+      - name: Build the pixel regression against main state decoding
+        run: |
+          git restore --source 075169f7b3faeae1216efc35df41c44fac9f3190 --worktree -- core/libs/prx/libSceAgcDriver/Graphics/src/State.cpp
+          cmake --build build --target libs agc_driver_inactive_vertex_point_size_tests --parallel 4
+      - name: Require the main export validation to reject inactive point size
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^agc_driver_inactive_vertex_point_size$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and '0x01210000' in result.stdout, 'main did not fail at the inactive point-size export check'
+          PY
+      - name: Restore the exact source revision and retest
+        run: |
+          git restore --source HEAD --worktree .
+          cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_vertex_clip_cull_draw_tests agc_driver_vertex_clip_cull_distances_tests agc_driver_layered_volume_draw_tests agc_driver_layered_volume_submit_tests agc_vertex_layer_export_tests agc_shader_memory_tests agc_driver_inactive_vertex_point_size_tests --parallel 4
+          ctest --test-dir build -R '^(agc_driver_graphics|agc_driver_vertex_clip_cull_.*|agc_driver_layered_volume_.*|agc_vertex_layer_export|agc_shader_memory|agc_driver_inactive_vertex_point_size)$' --output-on-failure --no-tests=error
