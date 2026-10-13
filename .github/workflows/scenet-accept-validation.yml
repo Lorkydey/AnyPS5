@@ -1,0 +1,107 @@
+name: Validate sceNetAccept readiness and inheritance
+on:
+  push:
+    branches: [ci/scenet-accept-update-oct13]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
+      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
+      SSL_CERT_FILE: C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 62df1d73fafc0850215620fb9ad87f754a01e0fd
+          submodules: recursive
+          fetch-depth: 3
+          persist-credentials: false
+      - id: toolchain
+        uses: actions/cache@v6
+        with:
+          path: C:\winlibs
+          key: ${{ env.WINLIBS_ZIP }}
+      - if: steps.toolchain.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
+          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
+      - shell: pwsh
+        run: Add-Content -LiteralPath $env:GITHUB_PATH -Value 'C:\winlibs\mingw64\bin'
+      - name: Configure the native Windows build
+        shell: cmd
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime, relinker and socket tests
+        shell: cmd
+        run: cmake --build build --target libs relinker guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests patched_libraries_tests --parallel 4
+      - name: Repeat the readiness regression 100 times
+        shell: cmd
+        run: ctest --test-dir build -R "^guest_sce_net$" --output-on-failure --no-tests=error --repeat until-fail:100
+      - name: Prove the Windows regression against main
+        shell: python
+        run: |
+          import pathlib, subprocess
+          source = pathlib.Path('core/libs/prx/libSceNet/Export.cpp')
+          saved = source.read_bytes()
+          try:
+              source.write_bytes(subprocess.check_output(['git', 'show', '2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d:' + source.as_posix()]))
+              subprocess.run(['cmake', '--build', 'build', '--target', 'guest_sce_net_tests', '--parallel', '4'], check=True)
+              result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_sce_net$', '--output-on-failure', '--no-tests=error'], capture_output=True, text=True)
+              print(result.stdout, flush=True)
+              print(result.stderr, flush=True)
+              assert result.returncode != 0, 'The unpatched Windows library must fail the new test'
+              assert 'sceNetAccept did not inherit listener nonblocking mode' in result.stdout, 'The failure must be the specific removed refusal'
+          finally:
+              source.write_bytes(saved)
+          subprocess.run(['cmake', '--build', 'build', '--target', 'guest_sce_net_tests', '--parallel', '4'], check=True)
+      - name: Verify Windows request and returned flags
+        shell: cmd
+        run: ctest --test-dir build -R "^(guest_sce_net|guest_tcp|guest_udp|guest_datagram_.*|patched_libraries)$" --output-on-failure --no-tests=error --repeat until-fail:5
+      - name: Conventions and whitespace
+        shell: cmd
+        run: python tools/check_conventions.py --base 2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d && git diff --check 2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d HEAD
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 62df1d73fafc0850215620fb9ad87f754a01e0fd
+          submodules: recursive
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Install runtime build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime, relinker and network regressions
+        run: cmake --build build --target libs relinker guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests patched_libraries_tests --parallel 4
+      - name: Check network behavior and patched libraries five times
+        run: ctest --test-dir build -R '^(guest_sce_net|guest_tcp|guest_udp|guest_datagram_.*|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+      - name: Check conventions and registration
+        run: |
+          python tools/check_conventions.py --base 2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d
+          python tools/check_test_registration.py build
+          git diff --check 2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d HEAD
+      - name: Build the new test against main's network implementation
+        run: |
+          git restore --source 2a2a3dc650b9245fb0fb9b088afb1a6c27637f7d --worktree -- core/libs/prx/libSceNet/Export.cpp
+          cmake --build build --target guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests --parallel 4
+      - name: Require failure at the nonblocking inheritance check
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_sce_net$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and 'sceNetAccept did not inherit listener nonblocking mode' in result.stdout, 'main did not fail at the expected accepted socket mode check'
+          PY
+      - name: Restore the exact PR source and repeat the checks
+        if: always()
+        run: |
+          git restore --source HEAD --worktree -- core/libs/prx/libSceNet/Export.cpp
+          cmake --build build --target libs guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests patched_libraries_tests --parallel 4
+          ctest --test-dir build -R '^(guest_sce_net|guest_tcp|guest_udp|guest_datagram_.*|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+          git diff --exit-code
