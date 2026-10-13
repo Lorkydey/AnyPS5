@@ -1,0 +1,105 @@
+name: Validate vertex user-data tails
+on:
+  push:
+    branches: [ci/reviewfix-4821-oct13]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      ANYPS5_REQUIRE_VULKAN: '1'
+      GALLIUM_OVERRIDE_CPU_CAPS: avx
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 7092b01b0daab6afc52ce67d79f5d0f2537b7279
+          submodules: recursive
+          fetch-depth: 8
+          persist-credentials: false
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime and regression tests
+        run: cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_vertex_clip_cull_draw_tests agc_driver_vertex_clip_cull_distances_tests agc_driver_layered_volume_draw_tests agc_driver_layered_volume_submit_tests agc_vertex_layer_export_tests agc_shader_memory_tests agc_driver_vertex_user_data_tail_tests agc_shader_control_flow_tests agc_driver_tests agc_driver_compute_user_data_calls_tests agc_driver_scalar_setpc_tests agc_driver_prepared_graphics_tests agc_driver_prepared_unregistered_graphics_tests --parallel 4
+      - name: Run graphics, cache and control-flow tests
+        run: ctest --test-dir build -R '^(agc_driver_graphics|agc_driver_vertex_clip_cull_.*|agc_driver_layered_volume_.*|agc_vertex_layer_export|agc_shader_memory|agc_driver_vertex_user_data_tail|agc_shader_control_flow|agc_driver|agc_driver_compute_user_data_calls.*|agc_driver_scalar_setpc|agc_driver_prepared_graphics|agc_driver_prepared_unregistered_graphics)$' --output-on-failure --no-tests=error
+      - name: Conventions, test registration and patch whitespace
+        run: |
+          python tools/check_conventions.py --base dacd78525e537a779682032c0ace7f7af120af05
+          python tools/check_test_registration.py build
+          git diff --check dacd78525e537a779682032c0ace7f7af120af05 HEAD
+      - name: Prove SCC and EXEC color regressions detect corrupted linked state
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, os, tempfile
+          root=Path(tempfile.mkdtemp())
+          repo=Path.cwd()
+          path=repo/'core/libs/prx/libSceAgcDriver/tests/execution/VertexUserDataTail.cpp'
+          original=path.read_bytes()
+          needle=b'    Prolog[prefix.size()] = 0xbe802008u;'
+          assert original.count(needle)==1
+          def run(args,label):
+              p=subprocess.run(args,cwd=repo,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+              (root/f'anyps5-reviewfix-4821-{label}.log').write_bytes(p.stdout)
+              print(p.stdout.decode('utf8',errors='replace')[-2400:],flush=True)
+              return p
+          try:
+              for name,first,corruption in [('scc','0xbf840001u','0xbf070c0cu'),('exec','0x7e0c02f2u','0xbefe0480u')]:
+                  replacement=f'''    if (vertexColor && continuation.front() == {first}) {{
+                  Prolog[prefix.size()] = {corruption};
+                  Prolog[prefix.size() + 1] = 0xbe802008u;
+              }} else {{
+                  Prolog[prefix.size()] = 0xbe802008u;
+              }}'''.encode()
+                  path.write_bytes(original.replace(needle,replacement))
+                  assert run(['cmake','--build','build','--target','agc_driver_vertex_user_data_tail_tests','--parallel','6'],name+'-negative-build').returncode==0
+                  result=run(['ctest','--test-dir','build','-R','^agc_driver_vertex_user_data_tail$','--output-on-failure','--no-tests=error'],name+'-negative')
+                  assert result.returncode and b'linked vertex tail pixels differ from the monolithic shader' in result.stdout
+          finally:
+              path.write_bytes(original)
+          assert run(['cmake','--build','build','--target','agc_driver_vertex_user_data_tail_tests','--parallel','6'],'state-restore-build').returncode==0
+          assert run(['ctest','--test-dir','build','-R','^agc_driver_vertex_user_data_tail$','--output-on-failure','--no-tests=error'],'state-restore-tests').returncode==0
+          PY
+      - name: Prove the continuation clip-distance regression
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path('core/libs/prx/libSceAgcDriver/Execution/src/Driver/Shaders/ShaderRegistry.cpp')
+          original = path.read_bytes()
+          line = b'    if (continuation != nullptr && PositionExportLayout(continuation, 0, continuation->code, bits) != 0) return bits;'
+          assert original.count(line) == 1
+          try:
+              path.write_bytes(original.replace(line, b''))
+              subprocess.run(['cmake', '--build', 'build', '--target', 'libs', 'agc_driver_vertex_user_data_tail_tests', '--parallel', '4'], check=True)
+              result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^agc_driver_vertex_user_data_tail$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              print(result.stdout)
+              assert result.returncode != 0 and 'linked vertex tail pixels differ' in result.stdout
+          finally:
+              path.write_bytes(original)
+          PY
+      - name: Replace changed existing sources with main for the negative control
+        run: |
+          python - <<'PY'
+          import subprocess
+          paths = subprocess.check_output(['git', 'diff', '--name-only', '--diff-filter=M', 'dacd78525e537a779682032c0ace7f7af120af05', 'HEAD', '--', 'core'], text=True).splitlines()
+          subprocess.run(['git', 'restore', '--source', 'dacd78525e537a779682032c0ace7f7af120af05', '--worktree', '--', *paths], check=True)
+          PY
+          cmake --build build --target libs agc_driver_vertex_user_data_tail_tests --parallel 4
+      - name: Require the new pixel test to fail at main's unresolved tail jump
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^agc_driver_vertex_user_data_tail$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and 'unsupported dynamic s_setpc_b64' in result.stdout, 'main did not fail at the expected unresolved tail'
+          PY
+      - name: Restore the exact source revision and retest
+        run: |
+          git restore --source HEAD --worktree .
+          cmake --build build --target libs relinker agc_driver_graphics_tests agc_driver_vertex_clip_cull_draw_tests agc_driver_vertex_clip_cull_distances_tests agc_driver_layered_volume_draw_tests agc_driver_layered_volume_submit_tests agc_vertex_layer_export_tests agc_shader_memory_tests agc_driver_vertex_user_data_tail_tests agc_shader_control_flow_tests agc_driver_tests agc_driver_compute_user_data_calls_tests agc_driver_scalar_setpc_tests agc_driver_prepared_graphics_tests agc_driver_prepared_unregistered_graphics_tests --parallel 4
+          ctest --test-dir build -R '^(agc_driver_graphics|agc_driver_vertex_clip_cull_.*|agc_driver_layered_volume_.*|agc_vertex_layer_export|agc_shader_memory|agc_driver_vertex_user_data_tail|agc_shader_control_flow|agc_driver|agc_driver_compute_user_data_calls.*|agc_driver_scalar_setpc|agc_driver_prepared_graphics|agc_driver_prepared_unregistered_graphics)$' --output-on-failure --no-tests=error
