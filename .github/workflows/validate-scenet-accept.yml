@@ -1,0 +1,49 @@
+name: Validate sceNetAccept nonblocking inheritance
+on:
+  push:
+    branches: [ci/scenet-accept-20261013]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 3c88c504c70ae5b24605849fe37777eadfd4caac
+          submodules: recursive
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Install runtime build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime, relinker and network regressions
+        run: cmake --build build --target libs relinker guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests patched_libraries_tests --parallel 4
+      - name: Check network behavior and patched libraries five times
+        run: ctest --test-dir build -R '^(guest_sce_net|guest_tcp|guest_udp|guest_datagram_.*|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+      - name: Check conventions and registration
+        run: |
+          python tools/check_conventions.py --base c13dc7e6b440725babd25ccec4262ccc4c78dfc3
+          python tools/check_test_registration.py build
+          git diff --check c13dc7e6b440725babd25ccec4262ccc4c78dfc3 HEAD
+      - name: Build the new test against main's network implementation
+        run: |
+          git restore --source c13dc7e6b440725babd25ccec4262ccc4c78dfc3 --worktree -- core/libs/prx/libSceNet/Export.cpp
+          cmake --build build --target guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests --parallel 4
+      - name: Require failure at the nonblocking inheritance check
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^guest_sce_net$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and 'sceNetAccept did not inherit listener nonblocking mode' in result.stdout, 'main did not fail at the expected accepted socket mode check'
+          PY
+      - name: Restore the exact PR source and repeat the checks
+        if: always()
+        run: |
+          git restore --source HEAD --worktree -- core/libs/prx/libSceNet/Export.cpp
+          cmake --build build --target libs guest_sce_net_tests guest_tcp_tests guest_udp_tests guest_datagram_receive_tests patched_libraries_tests --parallel 4
+          ctest --test-dir build -R '^(guest_sce_net|guest_tcp|guest_udp|guest_datagram_.*|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+          git diff --exit-code
