@@ -1,0 +1,49 @@
+name: Validate atomic JSON reports after rebase
+on:
+  push:
+    branches: [ci/reviewfix-4425-oct13]
+permissions:
+  contents: read
+jobs:
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: d45fee9b69c8f59e11818d3e25fbdfc0b6e296fd
+          fetch-depth: 3
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: All Python tools tests including JSON stops and atomic report writes
+        run: python -m unittest discover -s tools/tests -p 'test_*.py' -q
+      - name: Conventions and whitespace
+        run: |
+          python tools/check_conventions.py --base dacd78525e537a779682032c0ace7f7af120af05
+          git diff --check dacd78525e537a779682032c0ace7f7af120af05 HEAD
+      - name: Confirm main still truncates or leaves a partial JSON report
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          path = Path('tools/import_audit.py')
+          original = path.read_bytes()
+          try:
+              path.write_bytes(subprocess.check_output(['git', 'show', 'dacd78525e537a779682032c0ace7f7af120af05:tools/import_audit.py']))
+              result = subprocess.run(['python', '-m', 'unittest', 'tools.tests.test_import_audit.ImportAuditTests.test_failed_json_write_preserves_existing_report_and_leaves_no_partial_report', '-v'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              print(result.stdout.decode())
+              assert result.returncode and b'failures=2' in result.stdout and b'AssertionError' in result.stdout
+          finally:
+              path.write_bytes(original)
+          PY
+      - name: Restore and rerun report tests
+        run: python -m unittest tools.tests.test_import_audit -q
