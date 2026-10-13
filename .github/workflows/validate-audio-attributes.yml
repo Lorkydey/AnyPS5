@@ -1,0 +1,49 @@
+name: Validate AudioOut2 user supported attributes
+on:
+  push:
+    branches: [ci/audioout2-user-attributes-20261013]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 1970bcb2f874beec94e47b3ac2738dcd83aac3b0
+          submodules: recursive
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Install runtime build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev libxrandr-dev
+      - name: Configure Release runtime and tests
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
+      - name: Build runtime, relinker and audio regressions
+        run: cmake --build build --target libs relinker audio_out2_port_layouts_tests audio_out2_port_buffers_tests audio_out2_latency_tests patched_libraries_tests --parallel 4
+      - name: Check audio behavior and patched libraries five times
+        run: ctest --test-dir build -R '^(audio_out2_port_layouts|audio_out2_port_buffers|audio_out2_latency|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+      - name: Check conventions and registration
+        run: |
+          python tools/check_conventions.py --base 37dd4830846182bff60c73a07a74fab4fb8c1c60
+          python tools/check_test_registration.py build
+          git diff --check 37dd4830846182bff60c73a07a74fab4fb8c1c60 HEAD
+      - name: Build the new test against main's audio implementation
+        run: |
+          git restore --source 37dd4830846182bff60c73a07a74fab4fb8c1c60 --worktree -- core/libs/prx/libSceAudioOut/src/AudioOut2User.cpp core/libs/prx/libSceAudioOut/src/AudioOut2System.cpp
+          cmake --build build --target audio_out2_port_layouts_tests audio_out2_port_buffers_tests audio_out2_latency_tests --parallel 4
+      - name: Require failure at main's unimplemented user attribute query
+        run: |
+          python - <<'PY'
+          import subprocess
+          result = subprocess.run(['ctest', '--test-dir', 'build', '-R', '^audio_out2_port_layouts$', '--output-on-failure', '--no-tests=error'], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout)
+          assert result.returncode != 0 and 'sceAudioOut2UserGetSupportedAttributes' in result.stdout, 'main did not fail at the expected user attribute stub'
+          PY
+      - name: Restore the exact PR source and repeat the checks
+        if: always()
+        run: |
+          git restore --source HEAD --worktree -- core/libs/prx/libSceAudioOut/src/AudioOut2User.cpp core/libs/prx/libSceAudioOut/src/AudioOut2System.cpp
+          cmake --build build --target libs audio_out2_port_layouts_tests audio_out2_port_buffers_tests audio_out2_latency_tests patched_libraries_tests --parallel 4
+          ctest --test-dir build -R '^(audio_out2_port_layouts|audio_out2_port_buffers|audio_out2_latency|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
+          git diff --exit-code
