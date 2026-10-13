@@ -20,7 +20,7 @@ jobs:
       - name: Configure Release runtime and tests
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
       - name: Build runtime, relinker and coredump regression
-        run: cmake --build build --target libs relinker guest_coredump_attach_tests --parallel 4
+        run: cmake --build build --target libs relinker guest_coredump_attach_tests patched_libraries_tests --parallel 4
       - name: Check coredump behavior and patched libraries five times
         run: ctest --test-dir build -R '^(guest_coredump_attach|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
       - name: Check conventions and registration
@@ -44,6 +44,6 @@ jobs:
         if: always()
         run: |
           git restore --source HEAD --worktree -- core/libs/prx/libkernel/System/src/Coredump.cpp
-          cmake --build build --target libs guest_coredump_attach_tests --parallel 4
+          cmake --build build --target libs guest_coredump_attach_tests patched_libraries_tests --parallel 4
           ctest --test-dir build -R '^(guest_coredump_attach|patched_libraries)$' --repeat until-fail:5 --output-on-failure --no-tests=error
           git diff --exit-code
